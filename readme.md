@@ -9,20 +9,13 @@ A multi-threaded HTTP proxy server implementation in C++ with caching capabiliti
 - Support for HTTP/1.0 and HTTP/1.1 GET requests
 - Thread-safe cache implementation using mutex locks
 - Configurable cache size and client limits
-- RAII-compliant resource management
 - Error handling and logging
 
 ## Architecture
 
 ### 1. Core Components
 
-#### ProxyServer Class
-- Manages the main server operations
-- Handles client connections
-- Creates worker threads for request processing
-- Maintains the server socket and connection queue
-
-#### ProxyCache Class
+#### ProxyCache Functions
 - Implements the caching system
 - Uses LRU (Least Recently Used) replacement policy
 - Thread-safe operations using mutex locks
@@ -48,8 +41,8 @@ Key configurable parameters (defined as macros):
 ```cpp
 #define MAX_BYTES 4096          // Maximum request/response size
 #define MAX_CLIENTS 400         // Maximum concurrent connections
-#define MAX_SIZE 200*(1<<20)    // Cache size (200MB)
-#define MAX_ELEMENT_SIZE 10*(1<<20)  // Maximum cache entry size (10MB)
+#define MAX_SIZE 20*(1<<20)    // Cache size (20MB)
+#define MAX_ELEMENT_SIZE 1*(1<<20)  // Maximum cache entry size (1MB)
 ```
 
 ## Working Mechanism
@@ -102,18 +95,25 @@ The server handles various error conditions:
 
 1. **Compilation**
    ```bash
-   g++ -o with_cache with_cache.cpp -pthread
+   git clone https://github.com/yashagarwal0812/ProxyServer.git
+   cd ProxyServer
+   make
    ```
 
 2. **Running the Server**
    ```bash
-   ./with_cache <port_number>
+   ./proxy <port_number>
    ```
 
-3. **Configure Browser**
-   - Set proxy settings in your browser:
-     - Host: localhost
-     - Port: <specified_port_number>
+3. **Configure Browser (Open this URl)**
+   ```bash
+   http://localhost:<port>/<url>
+   ```
+   Example -
+   ```bash
+   http://localhost:8080/https:/www.jiit.ac.in/
+   ```
+   * This will work on new incognito windows because of cache implementation in new browsers.
 
 ## Performance Considerations
 
@@ -152,7 +152,3 @@ The server handles various error conditions:
 - POSIX-compliant operating system (Linux, Unix, macOS)
 - C++11 or higher compiler
 - pthread library
-
-## License
-
-This project is open source and available under the MIT License.
