@@ -102,7 +102,11 @@ The server handles various error conditions:
 
 2. **Running the Server**
    ```bash
-   ./proxy <port_number>
+   ./proxy <port>
+   ```
+   Example -
+   ```bash
+   ./proxy 8080
    ```
 
 3. **Configure Browser (Open this URl)**
