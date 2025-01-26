@@ -19,22 +19,32 @@
 
 #define MAX_BYTES 4096
 #define MAX_CLIENTS 400
-#define MAX_SIZE 200 * (1 << 20)
-#define MAX_ELEMENT_SIZE 10 * (1 << 20)
+#define MAX_SIZE 20 * (1 << 20)
+#define MAX_ELEMENT_SIZE 1 * (1 << 20)
 
 using namespace std;
+
+char *safeStrCpy(const char *src)
+{
+    if (!src)
+        return nullptr;
+    size_t len = strlen(src);
+    char *dest = new char[len + 1];
+    strcpy(dest, src);
+    return dest;
+}
 
 class CacheElement
 {
 public:
-    string data;
+    char *data;
     int len;
-    string url;
+    char *url;
     time_t lru_time;
     CacheElement *next;
 
 public:
-    CacheElement(string data, int len, string url, time_t lru_time, CacheElement *next)
+    CacheElement(char *data, int len, char *url, time_t lru_time, CacheElement *next)
     {
         this->data = data;
         this->len = len;
@@ -44,15 +54,15 @@ public:
     }
 };
 
+CacheElement *find(char *url);
 int addCacheElement(char *data, int size, char *url);
 void removeCacheElement();
-CacheElement *find(char *url);
 
 int PORT = 8080;
 int proxySocketID;
 pthread_t tid[MAX_CLIENTS];
 sem_t semaphore;
-pthread_mutex_t lock;
+pthread_mutex_t cacheLock;
 
 CacheElement *head;
 int cacheSize;
@@ -73,6 +83,35 @@ int checkHTTPversion(char *msg)
         version = -1;
 
     return version;
+}
+
+char *extractURL(char *buffer)
+{
+    char *urlStart = strstr(buffer, "GET ");
+    if (!urlStart)
+        return nullptr;
+
+    urlStart += 4; // Skip "GET "
+    while (*urlStart == ' ')
+        urlStart++; // Skip additional whitespace
+
+    char *urlEnd = strchr(urlStart, ' ');
+    if (!urlEnd)
+        return nullptr;
+
+    size_t urlLen = urlEnd - urlStart;
+    char *url = new char[urlLen + 1];
+    strncpy(url, urlStart, urlLen);
+    url[urlLen] = '\0';
+
+    // Optional: remove protocol if present
+    char *protocolStart = strstr(url, "://");
+    if (protocolStart)
+    {
+        memmove(url, protocolStart + 3, strlen(protocolStart + 3) + 1);
+    }
+
+    return url;
 }
 
 int sendErrorMsg(int socket, int status_code)
@@ -146,7 +185,8 @@ int connectRemoteServer(char *hostAddr, int portNum)
     bzero((char *)&serverAddr, sizeof(serverAddr));
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port = htons(portNum);
-    bcopy((char *)&host->h_addr, (char *)serverAddr.sin_addr.s_addr, host->h_length);
+    bcopy(host->h_addr, &serverAddr.sin_addr.s_addr, host->h_length);
+
     if (connect(remoteSocket, (struct sockaddr *)&serverAddr, (size_t)sizeof(serverAddr)) < 0)
     {
         fprintf(stderr, "Error in connecting");
@@ -158,73 +198,171 @@ int connectRemoteServer(char *hostAddr, int portNum)
 int handleRequest(int clientSocketID, ParsedRequest *request, char *tempReq)
 {
     char *buf = (char *)malloc(sizeof(char) * MAX_BYTES);
+    if (!buf)
+    {
+        perror("Malloc failed");
+        return -1;
+    }
     strcpy(buf, "GET ");
     strcat(buf, request->path);
     strcat(buf, " ");
     strcat(buf, request->version);
     strcat(buf, "\r\n");
-    size_t len = strlen(buf);
+
     if (ParsedHeader_set(request, "Connection", "close") < 0)
     {
-        cout << "Set host header error" << endl;
+        std::cout << "Set connection header error" << std::endl;
     }
-    if (ParsedHeader_get(request, "Host") == NULL)
+    if (!ParsedHeader_get(request, "Host"))
     {
         if (ParsedHeader_set(request, "Host", request->host) < 0)
         {
-            cout << "Set host header error" << endl;
+            std::cout << "Set host header error" << std::endl;
         }
     }
-    if (ParsedRequest_unparse_headers(request, buf + len, (size_t)MAX_BYTES - len))
+    size_t len = strlen(buf);
+    if (ParsedRequest_unparse_headers(request, buf + len, MAX_BYTES - len))
     {
-        cout << "Unparse failed" << endl;
+        std::cout << "Unparse failed" << std::endl;
     }
-    int serverPort = 80;
-    if (request->port != NULL)
-    {
-        serverPort = atoi(request->port);
-    }
+
+    int serverPort = request->port ? stoi(request->port) : 80;
     int remoteSocketId = connectRemoteServer(request->host, serverPort);
     if (remoteSocketId < 0)
+    {
+        perror("Failed to connect to remote server");
+        free(buf);
         return -1;
-    int bytesSend = send(remoteSocketId, buf, strlen(buf), 0);
+    }
+
+    send(remoteSocketId, buf, strlen(buf), 0);
     bzero(buf, MAX_BYTES);
-    bytesSend = recv(remoteSocketId, buf, MAX_BYTES - 1, 0);
+
     char *tempBuffer = (char *)malloc(sizeof(char) * MAX_BYTES);
+    if (!tempBuffer)
+    {
+        perror("Malloc failed");
+        close(remoteSocketId);
+        free(buf);
+        return -1;
+    }
+    cout << "after send" << endl;
     int tempBufferSize = MAX_BYTES;
     int tempBufferIndex = 0;
-    while (bytesSend > 0)
+
+    int bytesRecv = recv(remoteSocketId, buf, MAX_BYTES - 1, 0);
+    cout << "after recv" << endl;
+    while (bytesRecv > 0)
     {
-        bytesSend = send(clientSocketID, buf, bytesSend, 0);
-        for (int i = 0; i < bytesSend / sizeof(char); i++)
+        buf[bytesRecv] = '\0'; // Null-terminate the buffer
+        send(clientSocketID, buf, bytesRecv, 0);
+
+        // Append data to tempBuffer
+        if (tempBufferIndex + bytesRecv >= tempBufferSize)
         {
-            tempBuffer[tempBufferIndex] = buf[i];
-            tempBufferIndex++;
+            tempBufferSize += MAX_BYTES;
+            char *newBuffer = (char *)realloc(tempBuffer, tempBufferSize);
+            if (!newBuffer)
+            {
+                perror("Realloc failed");
+                free(tempBuffer);
+                free(buf);
+                close(remoteSocketId);
+                return -1;
+            }
+            tempBuffer = newBuffer;
         }
-        tempBufferSize += MAX_BYTES;
-        tempBuffer = (char *)realloc(tempBuffer, tempBufferSize);
-        if (bytesSend < 0)
-        {
-            perror("Error in sending data to client\n");
-            break;
-        }
+        memcpy(tempBuffer + tempBufferIndex, buf, bytesRecv);
+        tempBufferIndex += bytesRecv;
+
         bzero(buf, MAX_BYTES);
-        bytesSend = recv(remoteSocketId, buf, MAX_BYTES - 1, 0);
+        bytesRecv = recv(remoteSocketId, buf, MAX_BYTES - 1, 0);
     }
+
     tempBuffer[tempBufferIndex] = '\0';
+    addCacheElement(tempBuffer, tempBufferIndex, tempReq);
+
     free(buf);
-    addCacheElement(tempBuffer, strlen(tempBuffer), tempReq);
     free(tempBuffer);
     close(remoteSocketId);
     return 0;
 }
+
+// int handleRequest(int clientSocketID, ParsedRequest *request, char *tempReq)
+// {
+//     char *buf = (char *)malloc(sizeof(char) * MAX_BYTES);
+//     buf = safeStrCpy("GET ");
+//     strcat(buf, request->path);
+//     strcat(buf, " ");
+//     strcat(buf, request->version);
+//     strcat(buf, "\r\n");
+//     cout << "in handle req" << endl;
+//     size_t len = strlen(buf);
+//     if (ParsedHeader_set(request, "Connection", "close") < 0)
+//     {
+//         cout << "Set host header error" << endl;
+//     }
+//     if (ParsedHeader_get(request, "Host") == NULL)
+//     {
+//         if (ParsedHeader_set(request, "Host", request->host) < 0)
+//         {
+//             cout << "Set host header error" << endl;
+//         }
+//     }
+//     if (ParsedRequest_unparse_headers(request, buf + len, (size_t)MAX_BYTES - len))
+//     {
+//         cout << "Unparse failed" << endl;
+//     }
+//     int serverPort = 80;
+//     if (request->port != NULL)
+//     {
+//         serverPort = stoi(request->port);
+//     }
+//     cout << serverPort << endl;
+//     int remoteSocketId = connectRemoteServer(request->host, serverPort);
+//     cout << remoteSocketId << endl;
+//     if (remoteSocketId < 0)
+//         return -1;
+//     int bytesSend = send(remoteSocketId, buf, strlen(buf), 0);
+//     bzero(buf, MAX_BYTES);
+//     cout << "after send" << endl;
+//     bytesSend = recv(remoteSocketId, buf, MAX_BYTES - 1, 0);
+//     cout << "after recv" << endl;
+//     char *tempBuffer = (char *)malloc(sizeof(char) * MAX_BYTES);
+//     int tempBufferSize = MAX_BYTES;
+//     int tempBufferIndex = 0;
+//     while (bytesSend > 0)
+//     {
+//         bytesSend = send(clientSocketID, buf, bytesSend, 0);
+//         for (int i = 0; i < bytesSend / sizeof(char); i++)
+//         {
+//             tempBuffer[tempBufferIndex] = buf[i];
+//             tempBufferIndex++;
+//         }
+//         tempBufferSize += MAX_BYTES;
+//         tempBuffer = (char *)realloc(tempBuffer, tempBufferSize);
+//         if (bytesSend < 0)
+//         {
+//             perror("Error in sending data to client\n");
+//             break;
+//         }
+//         bzero(buf, MAX_BYTES);
+//         bytesSend = recv(remoteSocketId, buf, MAX_BYTES - 1, 0);
+//     }
+//     tempBuffer[tempBufferIndex] = '\0';
+//     free(buf);
+//     addCacheElement(tempBuffer, strlen(tempBuffer), tempReq);
+//     free(tempBuffer);
+//     close(remoteSocketId);
+//     return 0;
+// }
 
 void *threadFn(void *socketNew)
 {
     sem_wait(&semaphore);
     int s;
     sem_getvalue(&semaphore, &s);
-    cout << "Semaphore value: " << s;
+    cout << "Semaphore value: " << s << endl;
     int *t = (int *)socketNew;
     int socket = *t;
     int bytesSendClient, len;
@@ -244,10 +382,22 @@ void *threadFn(void *socketNew)
         }
     }
     char *tempReq = (char *)malloc(strlen(buffer) * sizeof(char) + 1);
+    // char *tempReq = extractURL(buffer);
+    // if (!tempReq)
+    // {
+    //     fprintf(stderr, "Failed to extract URL from request\n");
+    //     // Handle error appropriately
+    //     return NULL;
+    // }
+    // cout << "\n\n\n\nTESTTTT\n\n\n\n";
+    // cout << "TEMP REQ: " << tempReq << endl;
+    // cout << "Temp end" << endl
+    //      << endl;
     for (int i = 0; i < strlen(buffer); i++)
     {
         tempReq[i] = buffer[i];
     }
+    // cout << tempReq << endl;
     CacheElement *temp = find(tempReq);
     if (temp != NULL)
     {
@@ -278,12 +428,16 @@ void *threadFn(void *socketNew)
         }
         else
         {
+            cout << "In Parsing" << endl;
             bzero(buffer, MAX_BYTES);
             if (!strcmp(request->method, "GET"))
             {
+                cout << "In strcmp" << endl;
                 if (request->host && request->path && checkHTTPversion(request->version) == 1)
                 {
+                    cout << "HTTP ver" << checkHTTPversion(request->version) << endl;
                     bytesSendClient = handleRequest(socket, request, tempReq);
+                    cout << bytesSendClient << endl;
                     if (bytesSendClient == -1)
                     {
                         sendErrorMsg(socket, 500);
@@ -319,8 +473,9 @@ int main(int argc, char *argv[])
 {
     int clientSocketID, clientLen;
     struct sockaddr_in serverAddr, clientAddr;
+    memset(&serverAddr, 0, sizeof(serverAddr));
     sem_init(&semaphore, 0, MAX_CLIENTS);
-    pthread_mutex_init(&lock, NULL);
+    pthread_mutex_init(&cacheLock, NULL);
     if (argc == 2)
         PORT = atoi(argv[1]);
     else
@@ -344,7 +499,7 @@ int main(int argc, char *argv[])
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port = htons(PORT);
     serverAddr.sin_addr.s_addr = INADDR_ANY;
-    if (bind(proxySocketID, (struct sockaddr *)&serverAddr, sizeof(serverAddr) < 0))
+    if (::bind(proxySocketID, (struct sockaddr *)&serverAddr, (socklen_t)sizeof(serverAddr)) == -1)
     {
         perror("Port is not available\n");
         exit(1);
@@ -381,5 +536,122 @@ int main(int argc, char *argv[])
         i++;
     }
     close(proxySocketID);
+    return 0;
+}
+CacheElement *find(char *url)
+{
+    CacheElement *site = NULL;
+    if (!url)
+    {
+        fprintf(stderr, "find(): Null URL passed\n");
+        return NULL;
+    }
+    cout << head << endl;
+    int tempLockVal = pthread_mutex_lock(&cacheLock);
+    cout << "Find Cache Lock Acquired "
+         << tempLockVal << endl;
+    // printf("find(): URL to search: %s\n", url);
+    if (head != NULL)
+    {
+        site = head;
+        while (site != NULL)
+        {
+            if (!site->url)
+            {
+                printf("find(): Encountered NULL url in cache\n");
+                break;
+            }
+            cout << site->url << endl;
+
+            // printf("find(): Comparing '%s' with '%s'\n", site->url, url);
+            if (site->url && strcmp(site->url, url) == 0)
+            {
+                printf("LRU Time Track Before : %ld\n", site->lru_time);
+                printf("url found\n");
+                site->lru_time = time(NULL);
+                printf("LRU Time Track After : %ld", site->lru_time);
+                break;
+            }
+            site = site->next;
+        }
+    }
+    else
+    {
+        printf("\nurl not found\n");
+        tempLockVal = pthread_mutex_unlock(&cacheLock);
+        printf("Find Cache Lock Unlocked %d\n", tempLockVal);
+        return NULL;
+    }
+    tempLockVal = pthread_mutex_unlock(&cacheLock);
+    printf("Find Cache Lock Unlocked %d\n", tempLockVal);
+    return site;
+}
+
+void removeCacheElement()
+{
+    CacheElement *p;
+    CacheElement *q;
+    CacheElement *temp;
+    int temp_lock_val = pthread_mutex_lock(&cacheLock);
+    printf("Remove Cache Lock Acquired %d\n", temp_lock_val);
+    if (head != NULL)
+    {
+        for (q = head, p = head, temp = head; q->next != NULL;
+             q = q->next)
+        {
+            if (((q->next)->lru_time) < (temp->lru_time))
+            {
+                temp = q->next;
+                p = q;
+            }
+        }
+        if (temp == head)
+        {
+            head = head->next;
+        }
+        else
+        {
+            p->next = temp->next;
+        }
+        cacheSize = cacheSize - (temp->len) - sizeof(CacheElement) - strlen(temp->url) - 1;
+        free(temp->data);
+        free(temp->url);
+        free(temp);
+    }
+    temp_lock_val = pthread_mutex_unlock(&cacheLock);
+    printf("Remove Cache Lock Unlocked %d\n", temp_lock_val);
+}
+
+int addCacheElement(char *data, int size, char *url)
+{
+    if (!data || !url)
+        return 0;
+    int temp_lock_val = pthread_mutex_lock(&cacheLock);
+    printf("Add Cache Lock Acquired %d\n", temp_lock_val);
+    int element_size = size + 1 + strlen(url) + sizeof(CacheElement);
+    if (element_size > MAX_ELEMENT_SIZE)
+    {
+        temp_lock_val = pthread_mutex_unlock(&cacheLock);
+        printf("Add Cache Lock Unlocked %d\n", temp_lock_val);
+        return 0;
+    }
+    else
+    {
+        while (cacheSize + element_size > MAX_SIZE)
+        {
+            removeCacheElement();
+        }
+        CacheElement *element = (CacheElement *)malloc(sizeof(CacheElement));
+        element->data = safeStrCpy(data);
+        element->url = safeStrCpy(url);
+        element->lru_time = time(NULL);
+        element->next = head;
+        element->len = size;
+        head = element;
+        cacheSize += element_size;
+        temp_lock_val = pthread_mutex_unlock(&cacheLock);
+        printf("Add Cache Lock Unlocked %d\n", temp_lock_val);
+        return 1;
+    }
     return 0;
 }
