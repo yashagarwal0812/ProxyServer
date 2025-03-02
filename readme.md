@@ -16,12 +16,14 @@ A multi-threaded HTTP proxy server implementation in C++ with caching capabiliti
 ### 1. Core Components
 
 #### ProxyCache Functions
+
 - Implements the caching system
 - Uses LRU (Least Recently Used) replacement policy
 - Thread-safe operations using mutex locks
 - Manages cache size limits
 
 #### CacheElement Class
+
 - Represents individual cache entries
 - Stores URL, response data, and metadata
 - Tracks access times for LRU implementation
@@ -29,6 +31,7 @@ A multi-threaded HTTP proxy server implementation in C++ with caching capabiliti
 ### 2. Threading Model
 
 The server uses a thread-per-connection model:
+
 - Main thread accepts incoming connections
 - Each client request is handled by a separate worker thread
 - Semaphore controls the maximum number of concurrent connections
@@ -39,10 +42,10 @@ The server uses a thread-per-connection model:
 Key configurable parameters (defined as macros):
 
 ```cpp
-#define MAX_BYTES 4096          // Maximum request/response size
-#define MAX_CLIENTS 400         // Maximum concurrent connections
-#define MAX_SIZE 20*(1<<20)    // Cache size (20MB)
-#define MAX_ELEMENT_SIZE 1*(1<<20)  // Maximum cache entry size (1MB)
+#define MAX_BYTES 4096                 // Maximum request/response size
+#define MAX_CLIENTS 400                // Maximum concurrent connections
+#define MAX_SIZE 20*(1<<20)            // Cache size (20MB)
+#define MAX_ELEMENT_SIZE 1*(1<<20)     // Maximum cache entry size (1MB)
 ```
 
 ## Working Mechanism
@@ -50,33 +53,38 @@ Key configurable parameters (defined as macros):
 ### 1. Request Processing Flow
 
 1. **Connection Acceptance**
-   - Server listens on specified port
-   - Accepts incoming client connections
-   - Creates new thread for each connection
+
+      - Server listens on specified port
+      - Accepts incoming client connections
+      - Creates new thread for each connection
 
 2. **Request Parsing**
-   - Reads HTTP request from client
-   - Parses request headers and URL
-   - Validates HTTP method (only GET supported)
+
+      - Reads HTTP request from client
+      - Parses request headers and URL
+      - Validates HTTP method (only GET supported)
 
 3. **Cache Checking**
-   - Checks if requested URL exists in cache
-   - If found, returns cached response
-   - Updates LRU tracking information
+
+      - Checks if requested URL exists in cache
+      - If found, returns cached response
+      - Updates LRU tracking information
 
 4. **Remote Server Communication**
-   - If not in cache, connects to remote server
-   - Forwards client request
-   - Receives server response
+
+      - If not in cache, connects to remote server
+      - Forwards client request
+      - Receives server response
 
 5. **Response Handling**
-   - Caches new responses (if applicable)
-   - Sends response back to client
-   - Closes connection
+      - Caches new responses (if applicable)
+      - Sends response back to client
+      - Closes connection
 
 ### 2. Caching Mechanism
 
 The cache implements LRU (Least Recently Used) policy:
+
 - New entries are added to the front of the cache
 - When cache is full, least recently used entries are removed
 - Each access updates the entry's timestamp
@@ -85,6 +93,7 @@ The cache implements LRU (Least Recently Used) policy:
 ### 3. Error Handling
 
 The server handles various error conditions:
+
 - Invalid requests (400 Bad Request)
 - Server errors (500 Internal Server Error)
 - Connection failures
@@ -94,30 +103,34 @@ The server handles various error conditions:
 ## Usage
 
 1. **Compilation**
-   ```bash
-   git clone https://github.com/yashagarwal0812/ProxyServer.git
-   cd ProxyServer
-   make
-   ```
+
+      ```bash
+      git clone https://github.com/yashagarwal0812/ProxyServer.git
+      cd ProxyServer
+      make
+      ```
 
 2. **Running the Server**
-   ```bash
-   ./proxy <port>
-   ```
-   Example -
-   ```bash
-   ./proxy 8080
-   ```
+
+      ```bash
+      ./proxy <port>
+      ```
+
+      Example -
+
+      ```bash
+      ./proxy 8080
+      ```
 
 3. **Configure Browser (Open this URl)**
-   ```bash
-   http://localhost:<port>/<url>
-   ```
-   Example -
-   ```bash
-   http://localhost:8080/https:/www.jiit.ac.in/
-   ```
-   * This will work on new incognito windows because of cache implementation in new browsers.
+      ```bash
+      http://localhost:<port>/<url>
+      ```
+      Example -
+      ```bash
+      http://localhost:8080/https:/www.jiit.ac.in/
+      ```
+      - This will work on new incognito windows because of cache implementation in new browsers.
 
 ## Performance Considerations
 
